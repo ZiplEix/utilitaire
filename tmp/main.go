@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -100,4 +101,55 @@ func setExpiration(directoryPath string, expiration string) error {
 	fmt.Fprintln(os.Stderr, "Install systemd (user) or 'at', or delete manually later.")
 
 	return nil
+}
+
+func Cancel(absPath string) error {
+	p, err := filepath.Abs(absPath)
+	if err != nil {
+		return err
+	}
+	rec, ok, err := getRecord(p)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no scheduled deletion found for %s", p)
+	}
+
+	switch rec.Scheduler {
+	case SchedSystemd:
+		// Arrêter le timer (annule la planif) + le service s’il existe
+		_ = exec.Command("systemctl", "--user", "stop", rec.Unit+".timer").Run()
+		_ = exec.Command("systemctl", "--user", "stop", rec.Unit+".service").Run()
+		// (optionnel) nettoyer l'état failed
+		_ = exec.Command("systemctl", "--user", "reset-failed", rec.Unit+".service").Run()
+
+	case SchedAt:
+		if rec.AtJob == 0 {
+			return fmt.Errorf("invalid at job id for %s", p)
+		}
+		if err := exec.Command("atrm", strconv.Itoa(rec.AtJob)).Run(); err != nil {
+			return fmt.Errorf("atrm failed: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unknown scheduler: %s", rec.Scheduler)
+	}
+
+	if err := delRecord(p); err != nil {
+		return err
+	}
+	return nil
+}
+
+func List() ([]Record, error) {
+	st, err := loadState()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Record, 0, len(st.Records))
+	for _, r := range st.Records {
+		out = append(out, r)
+	}
+	return out, nil
 }
